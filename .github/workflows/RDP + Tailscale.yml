@@ -1,0 +1,105 @@
+name: RDP + Tailscale
+
+on:
+  workflow_dispatch:
+    inputs:
+      ts_tailnet:         { description: "Tailscale tailnet", required: false }
+      ts_api_key:         { description: "Tailscale API key", required: false }
+      ts_authkey:         { description: "Tailscale Auth key", required: false }
+      quick_test:         { description: "Run 5-minute test", type: boolean, default: false }
+      runtime_minutes:    { description: "Runtime (max 360)", required: false, default: "355" }
+      do_purge:           { description: "Purge devices", required: false, default: "true" }
+      cycles:             { description: "Handoffs left", required: false, default: "0" }
+      rdp_count:          { description: "RDP instances (1-10)", required: false, default: "1" }
+      crd_code:           { description: "CRD code", required: false, default: "" }
+      crd_pin:            { description: "CRD PIN", required: false, default: "123456" }
+
+permissions:
+  contents: read
+  actions: write
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.mk.outputs.matrix }}
+      multi:  ${{ steps.mk.outputs.multi }}
+    steps:
+      - id: mk
+        run: |
+          $crd = @'
+          ${{ inputs.crd_code }}
+          '@.Trim()
+          if ($crd.Length -gt 0) { $n = 1 } else {
+            $n = [int]"${{ inputs.rdp_count }}"; if ($n -lt 1) { $n = 1 }; if ($n -gt 10) { $n = 10 }
+          }
+          $inc = @(); for ($i=1; $i -le $n; $i++){ $inc += @{ id = $i } }
+          $json = @{ include = $inc } | ConvertTo-Json -Compress
+          "matrix=$json" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
+          $multi = if ($n -gt 1) { '1' } else { '0' }
+          "multi=$multi" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+  rdp:
+    needs: setup
+    runs-on: windows-latest
+    strategy:
+      matrix: ${{ fromJson(needs.setup.outputs.matrix) }}
+      max-parallel: 10
+    timeout-minutes: 370
+    env:
+      RDP_USER: Bullettemporary
+      RDP_PASS: Bullet@12345
+
+    steps:
+      - name: Set Environment Variables
+        run: |
+          $crd = @'
+          ${{ inputs.crd_code }}
+          '@.Trim()
+          "CRD_ENABLED=$([int]($crd.Length -gt 0))" | Out-File -Append $env:GITHUB_ENV
+          
+          if ("${{ inputs.rdp_count }}" -gt 1) { $hn = "bullet${{ matrix.id }}" } else { $hn = "bullet" }
+          "TS_HOSTNAME=$hn" | Out-File -Append $env:GITHUB_ENV
+
+          $runtime = [int]"${{ inputs.runtime_minutes }}"
+          if ("${{ inputs.quick_test }}" -eq "true") { $runtime = 5 }
+          "RUNTIME_MINUTES=$runtime" | Out-File -Append $env:GITHUB_ENV
+
+      - name: Install + Up Tailscale
+        run: |
+          $ts = "$env:ProgramFiles\Tailscale\tailscale.exe"
+          if (-not (Test-Path $ts)) {
+            Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi" -OutFile "$env:TEMP\tailscale.msi"
+            Start-Process msiexec.exe -ArgumentList "/i","$env:TEMP\tailscale.msi","/quiet","/norestart" -Wait
+          }
+          & $ts up --authkey "${{ inputs.ts_authkey }}" --hostname "$env:TS_HOSTNAME" --accept-dns=true
+          $ip4 = & $ts ip -4 | Select-Object -First 1
+          "TAILSCALE_IP=$ip4" | Out-File -Append $env:GITHUB_ENV
+
+      - name: Enable RDP user
+        run: |
+          $u=$env:RDP_USER; $p=$env:RDP_PASS
+          $sec = ConvertTo-SecureString $p -AsPlainText -Force
+          if (-not (Get-LocalUser -Name $u -EA SilentlyContinue)) {
+            New-LocalUser -Name $u -Password $sec -AccountNeverExpires
+            Add-LocalGroupMember -Group "Administrators" -Member $u
+          }
+          Set-ItemProperty "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name fDenyTSConnections -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop" | Out-Null
+
+
+      - name: Keep alive
+        run: |
+          $mins = [int]$env:RUNTIME_MINUTES
+          $end = (Get-Date).AddMinutes($mins)
+          Write-Host "Keeping alive until $($end.ToString('HH:mm:ss'))"
+          while ((Get-Date) -lt $end) {
+            Write-Host "Session Active... $(Get-Date) | IP: $env:TAILSCALE_IP"
+            Start-Sleep -Seconds 60
+          }
+
+  
