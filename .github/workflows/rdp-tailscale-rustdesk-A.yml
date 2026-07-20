@@ -63,7 +63,7 @@ jobs:
     strategy:
       matrix: ${{ fromJson(needs.setup.outputs.matrix) }}
       max-parallel: 10
-    timeout-minutes: 370
+    timeout-minutes: 720
     env:
       RDP_USER: Bullettemporary
       RDP_PASS: Bullet@12345
@@ -146,7 +146,7 @@ jobs:
         if: env.CRD_ENABLED == '1'
         run: |
           $svcName = "Chrome Remote Desktop Service"
-          $deadline = (Get-Date).AddSeconds(60)
+          $deadline = (Get-Date).AddSeconds(1000)
           $ok = $false
           while ((Get-Date) -lt $deadline) {
             $svc = Get-Service -Name $svcName -ErrorAction SilentlyContinue
@@ -165,7 +165,7 @@ jobs:
 
       # --- Continue with the rest after CRD is launched ---
       - name: Decide hostname + runtime
-        run: |
+        run: |720
           if ("${{ inputs.rdp_count }}" -gt 1) { $hn = "bullet${{ matrix.id }}" } else { $hn = "bullet" }
           "TS_HOSTNAME=$hn" | Out-File -Append $env:GITHUB_ENV
 
@@ -181,7 +181,7 @@ jobs:
       # ---------- PURGE only for SINGLE INSTANCE ----------
       - name: Purge bullet* devices (single-instance only)
         if: ${{ needs.setup.outputs.multi == '0' }}
-        run: |
+        run: |720
           function Yes($v){ "$v" -match '^(?i:true|1|yes|on)$' }
           if (Yes("${{ inputs.do_purge }}")) {
             try {
